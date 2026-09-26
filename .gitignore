@@ -1,0 +1,40 @@
+# ─── Secrets / environnement ───────────────────────────────
+.env
+*.env
+!.env.example
+backend/.env
+
+# ─── Python ─────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+venv/
+.venv/
+env/
+ENV/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ipynb_checkpoints/
+
+# ─── Données locales / vectoriel ────────────────────────────
+backend/chroma_db/
+chroma_db/
+*.sqlite3
+data/
+
+# ─── Node / Frontend ────────────────────────────────────────
+node_modules/
+frontend/node_modules/
+dist/
+dist-ssr/
+*.local
+
+# ─── Éditeurs / OS ──────────────────────────────────────────
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db
+*.log
