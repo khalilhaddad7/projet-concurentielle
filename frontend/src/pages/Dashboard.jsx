@@ -16,12 +16,15 @@ const COMPETITOR_COLORS = {
   'Google DeepMind': '#f59e0b',
 };
 
-const CATEGORY_ORDER = ['Produit', 'Finance', 'Ressources Humaines', 'Stratégie', 'Non classé'];
+const CATEGORY_ORDER = ['Produit', 'Finance', 'Ressources Humaines', 'Stratégie', 'Sécurité', 'Réglementation', 'Recherche', 'Non classé'];
 const CATEGORY_COLORS = {
   'Produit': '#38bdf8',
   'Finance': '#22c55e',
   'Ressources Humaines': '#f472b6',
   'Stratégie': '#a78bfa',
+  'Sécurité': '#ef4444',
+  'Réglementation': '#f59e0b',
+  'Recherche': '#2dd4bf',
   'Non classé': '#64748b',
 };
 

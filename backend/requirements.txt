@@ -20,9 +20,10 @@ psycopg2-binary==2.9.12     # driver PostgreSQL (postgresql+psycopg2)
 
 # --- NLP ---
 spacy==3.8.14
-transformers==5.14.1
+transformers==5.14.1        # analyse de sentiment (CamemBERT) — la classification des
+                            # catégories est faite par Groq (voir section RAG), plus par un modèle local
 torch==2.13.0               # requis par transformers (non installé automatiquement)
-sentencepiece==0.2.2        # tokenizers CamemBERT / mDeBERTa (non installé auto par transformers)
+sentencepiece==0.2.2        # tokenizer CamemBERT (non installé auto par transformers)
 # Modèle spaCy français (à installer séparément, ce n'est pas un paquet PyPI standard) :
 #   python -m spacy download fr_core_news_md
 

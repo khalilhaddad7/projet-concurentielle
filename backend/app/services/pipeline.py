@@ -110,9 +110,13 @@ def run_nlp(db: Session, limit: int = 20) -> Dict[str, Any]:
                 article.sentiment_score = sentiment["score"]
 
             article.alert_category = AlertCategoryEnum(alert_result["category"])
+            # is_critical repose désormais sur le booléen "critique" renvoyé par le
+            # classifieur (événement majeur), et non plus sur un score de confiance :
+            # Groq est presque toujours très confiant, donc la confiance seule ne
+            # discriminait plus rien. Un article "Non classé" n'est jamais critique.
             article.is_critical = (
                 alert_result["category"] != "Non classé"
-                and (alert_result.get("confidence") or 0) > 0.6
+                and bool(alert_result.get("is_critical"))
             )
 
             article.summary = summary

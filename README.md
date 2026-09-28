@@ -34,7 +34,7 @@ avec graphiques, comparatifs, alertes et exports. Backend **FastAPI**, frontend
 - **Collecte d'articles** via NewsAPI pour les 5 concurrents suivis, manuelle ou
   **planifiée** (APScheduler, cycle collecte → NLP → indexation toutes les X heures).
 - **Pipeline NLP** : extraction d'entités (spaCy), analyse de sentiment (CamemBERT),
-  catégorie d'alerte par classification *zero-shot* (mDeBERTa), extraction de montants
+  **catégorie d'alerte via LLM** (Groq, 7 catégories), extraction de montants
   financiers, et **résumé** automatique (LLM local via Ollama).
 - **Chatbot RAG** avec **historique des conversations**, **feedback** 👍/👎 par réponse,
   **suggestions** de questions et affichage des **sources** citées.
@@ -57,7 +57,7 @@ flowchart LR
     A --> PG[("PostgreSQL<br/>articles, users,<br/>conversations, logs…")]
     A --> CH[("ChromaDB<br/>base vectorielle")]
     A -->|"embeddings + résumés (local)"| OL["Ollama<br/>nomic-embed-text · llama3.2:3b"]
-    A -->|"génération du chatbot (cloud)"| GR["Groq<br/>openai/gpt-oss-120b"]
+    A -->|"chatbot + classification des catégories (cloud)"| GR["Groq<br/>openai/gpt-oss-120b"]
     A -->|"collecte d'articles"| NA["NewsAPI"]
 ```
 
@@ -72,8 +72,10 @@ flowchart LR
   recherche sémantique du RAG.
 - **Ollama (local)** — génère les **embeddings** (`nomic-embed-text`) et les **résumés**
   d'articles (`llama3.2:3b`). Tourne sur votre machine, aucune donnée envoyée au cloud.
-- **Groq (cloud)** — génère les **réponses du chatbot** (`openai/gpt-oss-120b`), pour
-  la rapidité. Seule la question et le contexte récupéré y transitent.
+- **Groq (cloud)** — génère les **réponses du chatbot** et **classe la catégorie
+  d'alerte** des articles (`openai/gpt-oss-120b`, repli `openai/gpt-oss-20b`), pour la
+  rapidité et la fiabilité. Le titre et le contenu de l'article y transitent pour la
+  classification ; pour le chatbot, la question et le contexte récupéré.
 - **NewsAPI** — source des articles collectés.
 
 ---
@@ -134,8 +136,8 @@ veille-concurrentielle/
 - **Ollama** installé et lancé, avec les modèles `llama3.2:3b` et `nomic-embed-text`.
 - Un compte **NewsAPI** (clé API) et un compte **Groq** (clé API).
 
-> **RAM recommandée : au moins 8 Go libres pendant le traitement NLP.** Les modèles
-> CamemBERT et mDeBERTa (via PyTorch) et les modèles Ollama sont gourmands en mémoire.
+> **RAM recommandée : au moins 8 Go libres pendant le traitement NLP.** Le modèle
+> CamemBERT (via PyTorch) et les modèles Ollama sont gourmands en mémoire.
 > Sur une machine trop juste, le traitement NLP peut échouer (voir la section
 > [Dépannage](#dépannage) : « fichier de pagination insuffisant » / Ollama qui plante).
 
@@ -411,7 +413,7 @@ Commandes utiles :
 | Problème | Cause / Solution |
 |---|---|
 | **`WinError 10013` sur le port 8000** | Port réservé par Hyper-V / WSL2 sous Windows. Lancez le backend sur le port **8001** (`--port 8001`) et vérifiez que `frontend/.env` pointe vers ce port. |
-| **Ollama plante (`llama-server` terminé) ou « fichier de pagination insuffisant »** | Manque de RAM : les modèles NLP (CamemBERT, mDeBERTa) et Ollama saturent la mémoire. Fermez des applications, augmentez le fichier de pagination Windows, ou traitez moins d'articles à la fois. Prévoyez ≥ 8 Go libres. |
+| **Ollama plante (`llama-server` terminé) ou « fichier de pagination insuffisant »** | Manque de RAM : le modèle NLP CamemBERT et Ollama saturent la mémoire. Fermez des applications, augmentez le fichier de pagination Windows, ou traitez moins d'articles à la fois. Prévoyez ≥ 8 Go libres. |
 | **PostgreSQL arrêté au démarrage** | Démarrez le service (PowerShell en **administrateur**), par ex. `Start-Service postgresql-x64-16` (adaptez le nom au vôtre : `Get-Service *postgres*`). Le backend démarre quand même mais les routes utilisant la base renvoient une erreur claire tant que le service est arrêté. |
 | **Erreur CORS dans le navigateur** | Le frontend appelle une origine non autorisée. Le backend n'autorise que l'origine du frontend Vite (`http://localhost:5173`) ; utilisez cette adresse et vérifiez que `frontend/.env` pointe vers le **bon port** du backend (8001). |
 | **Résumés manquants** | Ollama était indisponible au moment du NLP : l'article reste marqué non traité (`is_processed=false`) et sera **repris automatiquement** au prochain `/process-nlp` une fois Ollama relancé. Vérifiez qu'Ollama tourne et que `llama3.2:3b` est bien téléchargé. |
@@ -420,8 +422,10 @@ Commandes utiles :
 
 ## Limites connues et pistes d'amélioration
 
-- **Classification zero-shot imparfaite** : beaucoup d'articles restent en catégorie
-  **« Non classé »** (seuil de confiance volontairement prudent).
+- **Classification des catégories dépendante de Groq** : la catégorie d'alerte est
+  désormais déterminée par un LLM distant (Groq). C'est bien plus fiable que l'ancien
+  *zero-shot* local, mais cela requiert une connexion et la clé `GROQ_API_KEY` ; en cas
+  d'échec, l'article retombe en **« Non classé »** (repli sûr, le pipeline continue).
 - **Contenu tronqué par NewsAPI** : le plan gratuit ne renvoie qu'un extrait du corps
   des articles, ce qui limite la qualité des résumés et de la recherche.
 - **Refresh token en `localStorage`** côté frontend (risque XSS assumé) ; un cookie

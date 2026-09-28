@@ -4,7 +4,7 @@ import { saveBlob } from '../utils/download';
 import { useAuth } from '../context/AuthContext';
 
 const COMPETITORS = ['Mistral AI', 'Hugging Face', 'OpenAI', 'Anthropic', 'Google DeepMind'];
-const CATEGORIES = ['Produit', 'Finance', 'Ressources Humaines', 'Stratégie', 'Non classé'];
+const CATEGORIES = ['Produit', 'Finance', 'Ressources Humaines', 'Stratégie', 'Sécurité', 'Réglementation', 'Recherche', 'Non classé'];
 const SENTIMENTS = ['Positif', 'Neutre', 'Négatif'];
 
 function Articles() {
@@ -92,6 +92,9 @@ function Articles() {
     'Finance': { bg: 'rgba(34, 197, 94, 0.15)', text: '#22c55e', border: 'rgba(34, 197, 94, 0.3)' },
     'Stratégie': { bg: 'rgba(167, 139, 250, 0.15)', text: '#a78bfa', border: 'rgba(167, 139, 250, 0.3)' },
     'Ressources Humaines': { bg: 'rgba(244, 114, 182, 0.15)', text: '#f472b6', border: 'rgba(244, 114, 182, 0.3)' },
+    'Sécurité': { bg: 'rgba(239, 68, 68, 0.15)', text: '#ef4444', border: 'rgba(239, 68, 68, 0.3)' },
+    'Réglementation': { bg: 'rgba(245, 158, 11, 0.15)', text: '#f59e0b', border: 'rgba(245, 158, 11, 0.3)' },
+    'Recherche': { bg: 'rgba(45, 212, 191, 0.15)', text: '#2dd4bf', border: 'rgba(45, 212, 191, 0.3)' },
     'Non classé': { bg: 'rgba(100, 116, 139, 0.15)', text: '#94a3b8', border: 'rgba(100, 116, 139, 0.3)' },
   };
 

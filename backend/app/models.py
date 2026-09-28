@@ -34,6 +34,13 @@ class AlertCategoryEnum(str, enum.Enum):
     finance = "Finance"
     rh = "Ressources Humaines"
     strategie = "Stratégie"
+    # Catégories ajoutées pour mieux couvrir les vrais sujets des articles.
+    # ATTENTION : SQLAlchemy stocke le NOM du membre (ex: "securite"), pas la
+    # valeur affichée ("Sécurité"). Ces noms sont donc les valeurs ajoutées au
+    # type enum PostgreSQL par la migration Alembic correspondante.
+    securite = "Sécurité"
+    reglementation = "Réglementation"
+    recherche = "Recherche"
     non_classe = "Non classé"
 
 
