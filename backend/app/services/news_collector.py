@@ -1,9 +1,17 @@
+import logging
+
 import requests
 from datetime import datetime, timedelta
 from typing import List, Dict
 from app.config import NEWSAPI_KEY
 
+logger = logging.getLogger(__name__)
+
 NEWSAPI_URL = "https://newsapi.org/v2/everything"
+
+# Délai maximal (en secondes) pour un appel à NewsAPI. Sans timeout explicite,
+# requests peut rester bloqué indéfiniment si le serveur ne répond pas.
+NEWSAPI_TIMEOUT = 15
 
 # Mapping entre le nom affiché (Enum) et les mots-clés de recherche NewsAPI
 COMPETITOR_QUERIES = {
@@ -33,10 +41,27 @@ def fetch_articles_for_competitor(competitor_name: str, query: str, days_back: i
         "apiKey": NEWSAPI_KEY,
     }
 
-    response = requests.get(NEWSAPI_URL, params=params)
+    # Timeout explicite + gestion des erreurs réseau (timeout, connexion refusée,
+    # DNS injoignable...). En cas d'échec réseau, on log et on renvoie une liste
+    # vide pour ce concurrent : la boucle appelante pourra continuer avec les
+    # autres concurrents sans planter.
+    try:
+        response = requests.get(NEWSAPI_URL, params=params, timeout=NEWSAPI_TIMEOUT)
+    except requests.exceptions.RequestException as e:
+        logger.error(
+            "Erreur réseau lors de l'appel à NewsAPI pour '%s' : %s",
+            competitor_name,
+            e,
+        )
+        return []
 
     if response.status_code != 200:
-        print(f"[ERREUR] NewsAPI a répondu {response.status_code} pour '{competitor_name}': {response.text}")
+        logger.error(
+            "NewsAPI a répondu %s pour '%s' : %s",
+            response.status_code,
+            competitor_name,
+            response.text,
+        )
         return []
 
     data = response.json()

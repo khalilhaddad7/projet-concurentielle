@@ -1,3 +1,5 @@
+import logging
+
 import ollama
 from typing import List, Dict, Any, Optional
 from sqlalchemy.orm import Session
@@ -6,6 +8,18 @@ import chromadb
 from chromadb.config import Settings
 from groq import Groq
 from app.config import GROQ_API_KEY
+
+logger = logging.getLogger(__name__)
+
+
+class EmbeddingServiceUnavailable(Exception):
+    """
+    Levée lorsque le service d'embeddings (Ollama) est injoignable.
+
+    Permet de distinguer une panne d'Ollama d'une simple absence de résultats,
+    afin que la couche RAG renvoie un message clair à l'utilisateur plutôt que
+    de laisser remonter une exception brute (qui deviendrait un HTTP 500).
+    """
 
 # ─── Configuration ───────────────────────────────────────────────
 
@@ -56,7 +70,12 @@ def embed_text(text: str) -> List[float]:
 
 # ─── Indexation ────────────────────────────────────────────────────
 
-def index_article(article: models.Article, collection=None) -> bool:
+def index_article(article: models.Article, collection=None, db: Optional[Session] = None) -> bool:
+    """
+    Indexe un article dans ChromaDB et, si `db` est fourni, met à jour en base
+    l'état d'indexation de l'article (is_embedded=True, embedding_id=<id ChromaDB>)
+    puis commit. L'id ChromaDB utilisé est str(article.id).
+    """
     if collection is None:
         collection = get_articles_collection()
 
@@ -64,6 +83,7 @@ def index_article(article: models.Article, collection=None) -> bool:
         return False
 
     text_to_embed = f"{article.title or ''}\n\n{article.content or ''}"[:4000]
+    chroma_id = str(article.id)
 
     metadata = {
         "title": article.title or "",
@@ -78,13 +98,20 @@ def index_article(article: models.Article, collection=None) -> bool:
 
     try:
         collection.upsert(
-            ids=[str(article.id)],
+            ids=[chroma_id],
             documents=[text_to_embed],
             metadatas=[metadata],
             embeddings=[embed_text(text_to_embed)]
         )
+        # Trace en base ce qui a réellement été indexé dans ChromaDB.
+        article.is_embedded = True
+        article.embedding_id = chroma_id
+        if db is not None:
+            db.commit()
         return True
     except Exception as e:
+        if db is not None:
+            db.rollback()
         print(f"[ERREUR Indexation] Article {article.id} : {e}")
         return False
 
@@ -100,7 +127,8 @@ def index_all_articles(db: Session, limit: Optional[int] = None) -> Dict[str, An
     errors = 0
 
     for article in articles:
-        if index_article(article, collection):
+        # On passe db pour que index_article mette à jour is_embedded/embedding_id.
+        if index_article(article, collection, db=db):
             indexed += 1
         else:
             errors += 1
@@ -120,7 +148,17 @@ def search_articles(
     competitor_filter: Optional[str] = None
 ) -> List[Dict[str, Any]]:
     collection = get_articles_collection()
-    query_embedding = embed_text(query)
+
+    # L'appel à Ollama (embeddings) est ici explicitement protégé : si Ollama est
+    # éteint ou injoignable, on ne laisse PAS l'exception brute remonter jusqu'à
+    # FastAPI (ce qui produirait un HTTP 500 avec stack trace). On lève une
+    # exception dédiée, interceptée plus haut dans chat_rag pour renvoyer un
+    # message clair à l'utilisateur.
+    try:
+        query_embedding = embed_text(query)
+    except Exception as e:
+        logger.error("Service d'embeddings (Ollama) indisponible : %s", e)
+        raise EmbeddingServiceUnavailable(str(e)) from e
 
     where_filter = None
     if competitor_filter:
@@ -161,7 +199,22 @@ def search_articles(
 
 # ─── Génération RAG ────────────────────────────────────────────────
 
-def build_rag_prompt(query: str, articles: List[Dict[str, Any]]) -> str:
+# ─── Gestion du contexte de conversation (limite de tokens) ──────────
+# Stratégie : fenêtre glissante. On ne renvoie à Groq que les messages les plus
+# récents, bornés à la fois en NOMBRE (MAX_HISTORY_MESSAGES) et en TAILLE totale
+# (MAX_HISTORY_CHARS ≈ ~1500 tokens). Les messages les plus anciens sont évincés
+# en premier. Combiné au prompt système (articles, borné par n_results), le total
+# reste largement sous la limite de contexte du modèle Groq. Simple, prévisible,
+# et préserve ce qui compte pour un suivi ("et pour Anthropic ?") : les échanges récents.
+MAX_HISTORY_MESSAGES = 10
+MAX_HISTORY_CHARS = 6000
+
+# Message de secours si le modèle ne renvoie aucun contenu exploitable.
+EMPTY_ANSWER_FALLBACK = "Je n'ai pas pu générer de réponse, merci de reformuler votre question."
+
+
+def build_rag_system_prompt(articles: List[Dict[str, Any]]) -> str:
+    """Construit le message SYSTÈME : règles + articles récupérés pour cette question."""
     if not articles:
         context = "Aucun article pertinent n'a été trouvé dans la base de connaissances."
     else:
@@ -177,7 +230,7 @@ def build_rag_prompt(query: str, articles: List[Dict[str, Any]]) -> str:
             context_parts.append(part)
         context = "\n".join(context_parts)
 
-    prompt = (
+    return (
         "Tu es un assistant de veille stratégique spécialisé. Tu as accès à une base "
         "d'articles de veille concurrentielle.\n\n"
         "RÈGLES STRICTES :\n"
@@ -185,12 +238,27 @@ def build_rag_prompt(query: str, articles: List[Dict[str, Any]]) -> str:
         "2. Tu ne dois JAMAIS inventer d'informations.\n"
         "3. Si les articles ne contiennent pas la réponse, dis explicitement : "
         "\"Je n'ai pas trouvé d'information à ce sujet dans les articles indexés.\"\n"
-        "4. Sois factuel, concis, et cite les titres des articles quand tu t'y réfères.\n\n"
-        f"QUESTION : {query}\n\n"
-        f"ARTICLES :\n{context}\n\n"
-        "RÉPONSE :"
+        "4. Sois factuel, concis, et cite les titres des articles quand tu t'y réfères.\n"
+        "5. Tiens compte de l'historique de la conversation pour comprendre les questions "
+        "de suivi (ex: \"et pour Anthropic ?\").\n\n"
+        f"ARTICLES :\n{context}"
     )
-    return prompt
+
+
+def _truncate_history(history: Optional[List[Dict[str, str]]]) -> List[Dict[str, str]]:
+    """Fenêtre glissante : garde les messages récents dans les limites nombre + taille."""
+    if not history:
+        return []
+    # On part des plus récents et on remonte tant qu'on respecte les deux budgets.
+    kept_reversed = []
+    total_chars = 0
+    for msg in reversed(history[-MAX_HISTORY_MESSAGES:]):
+        content = msg.get("content", "") or ""
+        if total_chars + len(content) > MAX_HISTORY_CHARS:
+            break
+        kept_reversed.append({"role": msg["role"], "content": content})
+        total_chars += len(content)
+    return list(reversed(kept_reversed))
 
 
 def is_greeting(query: str) -> bool:
@@ -201,9 +269,12 @@ def is_greeting(query: str) -> bool:
     return any(g in q for g in GREETINGS)
 
 
-def chat_rag(query: str, n_results: int = 3) -> Dict[str, Any]:
+def chat_rag(query: str, history: Optional[List[Dict[str, str]]] = None, n_results: int = 3) -> Dict[str, Any]:
     """
     Pipeline complet RAG avec Groq (LLM rapide) + Ollama (embeddings).
+
+    `history` : messages précédents de la conversation ([{role, content}, ...]),
+    utilisés comme contexte (tronqués via _truncate_history pour la limite de tokens).
     """
     # 1. Si c'est une salutation, répondre directement via Groq
     if is_greeting(query):
@@ -220,11 +291,12 @@ def chat_rag(query: str, n_results: int = 3) -> Dict[str, Any]:
                     )
                 }],
                 temperature=0.7,
-                max_tokens=150,
+                max_tokens=300,
             )
+            greeting_answer = (response.choices[0].message.content or "").strip()
             return {
                 "query": query,
-                "answer": response.choices[0].message.content.strip(),
+                "answer": greeting_answer or "Bonjour ! Je suis votre assistant de veille stratégique. Comment puis-je vous aider ?",
                 "sources": [],
                 "success": True
             }
@@ -237,19 +309,38 @@ def chat_rag(query: str, n_results: int = 3) -> Dict[str, Any]:
             }
 
     # 2. Recherche sémantique normale
-    articles = search_articles(query, n_results=n_results)
+    #    Si Ollama (embeddings) est indisponible, on renvoie un message clair
+    #    plutôt que de laisser remonter l'exception (qui deviendrait un 500 brut).
+    try:
+        articles = search_articles(query, n_results=n_results)
+    except EmbeddingServiceUnavailable:
+        return {
+            "query": query,
+            "answer": "Le service d'embeddings (Ollama) est indisponible, merci de réessayer plus tard.",
+            "sources": [],
+            "success": False,
+        }
 
-    # 3. Prompt + Génération Groq
-    prompt = build_rag_prompt(query, articles)
+    # 3. Construction des messages : système (RAG) + historique tronqué + question
+    system_prompt = build_rag_system_prompt(articles)
+    messages = [{"role": "system", "content": system_prompt}]
+    messages += _truncate_history(history)
+    messages.append({"role": "user", "content": query})
 
     try:
         response = groq_client.chat.completions.create(
             model=LLM_MODEL,
-            messages=[{"role": "user", "content": prompt}],
+            messages=messages,
             temperature=0.3,
-            max_tokens=250,
+            # Modèle "à raisonnement" (gpt-oss) : une marge plus large évite qu'il
+            # épuise le budget en réflexion interne et renvoie un contenu vide.
+            max_tokens=800,
         )
-        answer = response.choices[0].message.content.strip()
+        # content peut être None/vide (réflexion ayant consommé le budget) : on
+        # sécurise avec un repli plutôt que de renvoyer une réponse vide.
+        answer = (response.choices[0].message.content or "").strip()
+        if not answer:
+            answer = EMPTY_ANSWER_FALLBACK
     except Exception as e:
         return {
             "query": query,

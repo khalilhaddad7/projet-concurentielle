@@ -1,11 +1,21 @@
 import { useEffect, useState } from 'react';
-import { fetchArticles, collectArticles, processNlp, indexArticles } from '../services/api';
+import { fetchArticles, collectArticles, processNlp, indexArticles, exportArticles } from '../services/api';
+import { saveBlob } from '../utils/download';
+import { useAuth } from '../context/AuthContext';
+
+const COMPETITORS = ['Mistral AI', 'Hugging Face', 'OpenAI', 'Anthropic', 'Google DeepMind'];
+const CATEGORIES = ['Produit', 'Finance', 'Ressources Humaines', 'Stratégie', 'Non classé'];
+const SENTIMENTS = ['Positif', 'Neutre', 'Négatif'];
 
 function Articles() {
+  const { isAdmin } = useAuth();
   const [articles, setArticles] = useState([]);
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState('');
   const [messageType, setMessageType] = useState('info');
+  const [filters, setFilters] = useState({ competitor: '', category: '', sentiment: '' });
+  const [exportOpen, setExportOpen] = useState(false);
+  const [exporting, setExporting] = useState(false);
 
   const load = () => {
     setLoading(true);
@@ -55,6 +65,28 @@ function Articles() {
     }
   };
 
+  // Filtrage client-side (les mêmes filtres sont envoyés à l'export côté serveur).
+  const visibleArticles = articles.filter(a =>
+    (!filters.competitor || a.competitor === filters.competitor) &&
+    (!filters.category || a.alert_category === filters.category) &&
+    (!filters.sentiment || a.sentiment === filters.sentiment)
+  );
+
+  const handleExport = async (format) => {
+    setExportOpen(false);
+    setExporting(true);
+    showMessage('⏳ Génération de l\'export…', 'info');
+    try {
+      const res = await exportArticles(format, filters);
+      saveBlob(res, `articles.${format}`);
+      showMessage('✅ Export téléchargé', 'success');
+    } catch {
+      showMessage('❌ Erreur lors de l\'export', 'error');
+    } finally {
+      setExporting(false);
+    }
+  };
+
   const categoryColors = {
     'Produit': { bg: 'rgba(56, 189, 248, 0.15)', text: '#38bdf8', border: 'rgba(56, 189, 248, 0.3)' },
     'Finance': { bg: 'rgba(34, 197, 94, 0.15)', text: '#22c55e', border: 'rgba(34, 197, 94, 0.3)' },
@@ -76,15 +108,65 @@ function Articles() {
         <div>
           <h1 style={{ fontSize: '2rem', fontWeight: 700 }}>📰 Articles collectés</h1>
           <p style={{ color: '#94a3b8', marginTop: '0.25rem' }}>
-            {articles.length} articles dans la base
+            {visibleArticles.length} article{visibleArticles.length > 1 ? 's' : ''}
+            {visibleArticles.length !== articles.length ? ` (sur ${articles.length})` : ' dans la base'}
           </p>
         </div>
-        <div style={{ display: 'flex', gap: '0.75rem' }}>
-          <ActionButton onClick={handleCollect} icon="🔄" label="Collecter" color="#38bdf8" />
-          <ActionButton onClick={handleProcess} icon="🧠" label="NLP" color="#22c55e" />
-          <ActionButton onClick={handleIndex} icon="📦" label="Indexer" color="#a78bfa" />
+        <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center' }}>
+          {/* Actions d'administration : visibles uniquement pour les admins.
+              Le backend les protège aussi (require_admin) — ce masquage est
+              purement cosmétique côté client. */}
+          {isAdmin && (
+            <>
+              <ActionButton onClick={handleCollect} icon="🔄" label="Collecter" color="#38bdf8" />
+              <ActionButton onClick={handleProcess} icon="🧠" label="NLP" color="#22c55e" />
+              <ActionButton onClick={handleIndex} icon="📦" label="Indexer" color="#a78bfa" />
+            </>
+          )}
+
+          {/* Menu d'export (applique les filtres courants) */}
+          <div style={{ position: 'relative' }}>
+            <ActionButton
+              onClick={() => setExportOpen(o => !o)}
+              icon={exporting ? '⏳' : '⬇️'}
+              label={exporting ? 'Export…' : 'Exporter'}
+              color="#f59e0b"
+            />
+            {exportOpen && !exporting && (
+              <div style={{
+                position: 'absolute', right: 0, top: 'calc(100% + 0.4rem)', zIndex: 20,
+                background: '#1e293b', border: '1px solid #334155', borderRadius: '10px',
+                overflow: 'hidden', minWidth: '150px', boxShadow: '0 8px 20px rgba(0,0,0,0.35)',
+              }}>
+                <ExportItem onClick={() => handleExport('csv')} label="📄 CSV (Excel)" />
+                <ExportItem onClick={() => handleExport('xlsx')} label="📊 Excel (.xlsx)" />
+              </div>
+            )}
+          </div>
+
           <ActionButton onClick={load} icon="🔄" label="Rafraîchir" color="#64748b" />
         </div>
+      </div>
+
+      {/* Barre de filtres */}
+      <div style={{ display: 'flex', gap: '0.75rem', marginBottom: '1.5rem', flexWrap: 'wrap' }}>
+        <FilterSelect value={filters.competitor} onChange={v => setFilters(f => ({ ...f, competitor: v }))}
+                      placeholder="Tous les concurrents" options={COMPETITORS} />
+        <FilterSelect value={filters.category} onChange={v => setFilters(f => ({ ...f, category: v }))}
+                      placeholder="Toutes les catégories" options={CATEGORIES} />
+        <FilterSelect value={filters.sentiment} onChange={v => setFilters(f => ({ ...f, sentiment: v }))}
+                      placeholder="Tous les sentiments" options={SENTIMENTS} />
+        {(filters.competitor || filters.category || filters.sentiment) && (
+          <button
+            onClick={() => setFilters({ competitor: '', category: '', sentiment: '' })}
+            style={{
+              padding: '0.55rem 1rem', background: 'transparent', color: '#94a3b8',
+              border: '1px solid #334155', borderRadius: '8px', cursor: 'pointer', fontSize: '0.85rem',
+            }}
+          >
+            ✕ Réinitialiser
+          </button>
+        )}
       </div>
 
       {message && (
@@ -132,7 +214,7 @@ function Articles() {
                 </tr>
               </thead>
               <tbody>
-                {articles.map((a, i) => {
+                {visibleArticles.map((a, i) => {
                   const catStyle = categoryColors[a.alert_category] || categoryColors['Non classé'];
                   return (
                     <tr key={a.id} style={{
@@ -208,6 +290,39 @@ function Articles() {
         </div>
       )}
     </div>
+  );
+}
+
+function FilterSelect({ value, onChange, placeholder, options }) {
+  return (
+    <select
+      value={value}
+      onChange={e => onChange(e.target.value)}
+      style={{
+        padding: '0.55rem 0.9rem', background: '#1e293b', color: value ? '#e2e8f0' : '#94a3b8',
+        border: `1px solid ${value ? 'rgba(56, 189, 248, 0.4)' : '#334155'}`, borderRadius: '8px',
+        fontSize: '0.85rem', cursor: 'pointer', outline: 'none',
+      }}
+    >
+      <option value="">{placeholder}</option>
+      {options.map(o => <option key={o} value={o}>{o}</option>)}
+    </select>
+  );
+}
+
+function ExportItem({ onClick, label }) {
+  return (
+    <button
+      onClick={onClick}
+      style={{
+        display: 'block', width: '100%', textAlign: 'left', padding: '0.65rem 1rem',
+        background: 'transparent', color: '#e2e8f0', border: 'none', cursor: 'pointer', fontSize: '0.88rem',
+      }}
+      onMouseEnter={e => (e.currentTarget.style.background = '#334155')}
+      onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
+    >
+      {label}
+    </button>
   );
 }
 
